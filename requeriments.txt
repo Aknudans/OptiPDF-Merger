@@ -2,3 +2,4 @@ pypdf
 pikepdf
 pymupdf
 pytest
+tqdm

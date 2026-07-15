@@ -23,6 +23,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from tqdm import tqdm
+
 from src.config import DEFAULT_MAX_SIZE_MB
 
 COMPRESSION_PHASES = [
@@ -120,7 +122,7 @@ def _build_downsample_args(dpi: int) -> list[str]:
         "-dDownsampleMonoImages=true",
         "-dColorImageDownsampleType=/Average",
         "-dGrayImageDownsampleType=/Average",
-        "-dMonoImageDownsampleType=/Subsample",
+        "-dMonoImageDownsampleType=/Bicubic",
         f"-dColorImageResolution={dpi}",
         f"-dGrayImageResolution={dpi}",
         f"-dMonoImageResolution={dpi}",
@@ -136,13 +138,14 @@ def _attempt_compression(
 ) -> float:
     """
     Ejecuta un intento de compresión y devuelve el tamaño resultante en MB,
-    imprimiendo el progreso por consola.
+    imprimiendo el progreso por consola. Usa tqdm.write en vez de print
+    para no corromper una barra de progreso activa.
     """
-    print(f"{label}: comprimiendo con calidad {gs_setting}...")
+    tqdm.write(f"{label}: comprimiendo con calidad {gs_setting}...")
     _run_ghostscript(input_path, output_path, gs_setting, extra_args)
 
     current_size = get_file_size_mb(output_path)
-    print(f"Tamaño resultante: {current_size:.2f}MB")
+    tqdm.write(f"Tamaño resultante: {current_size:.2f}MB")
     return current_size
 
 
@@ -172,40 +175,48 @@ def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT
         print(f"'{input_path.name}' ya cumple el límite de {max_size_mb}MB. No requiere compresión.")
         return output_path
 
-    for phase in COMPRESSION_PHASES:
-        current_size = _attempt_compression(
-            phase["name"], input_path, output_path, phase["gs_setting"]
+    num_extended_steps = (EXTENDED_DPI_START - EXTENDED_DPI_FLOOR) // EXTENDED_DPI_STEP + 1
+    total_steps = len(COMPRESSION_PHASES) + num_extended_steps
+
+    with tqdm(total=total_steps, desc="Comprimiendo", unit="fase") as pbar:
+        for phase in COMPRESSION_PHASES:
+            pbar.set_postfix_str(phase["name"])
+            current_size = _attempt_compression(
+                phase["name"], input_path, output_path, phase["gs_setting"]
+            )
+            pbar.update(1)
+
+            if current_size <= max_size_mb:
+                tqdm.write(f"\nPDF comprimido guardado en: {output_path}")
+                return output_path
+
+        tqdm.write(
+            "\nLas fases estándar no fueron suficientes. "
+            "Iniciando compresión extendida con downsampling progresivo de imágenes..."
         )
 
-        if current_size <= max_size_mb:
-            print(f"\nPDF comprimido guardado en: {output_path}")
-            return output_path
+        dpi = EXTENDED_DPI_START
+        fase_num = len(COMPRESSION_PHASES)
 
-    print(
-        "\nLas fases estándar no fueron suficientes. "
-        "Iniciando compresión extendida con downsampling progresivo de imágenes..."
-    )
+        while dpi >= EXTENDED_DPI_FLOOR:
+            fase_num += 1
+            pbar.set_postfix_str(f"Fase {fase_num} ({dpi} DPI)")
+            current_size = _attempt_compression(
+                f"Fase {fase_num}",
+                input_path,
+                output_path,
+                "/screen",
+                extra_args=_build_downsample_args(dpi),
+            )
+            pbar.update(1)
 
-    dpi = EXTENDED_DPI_START
-    fase_num = len(COMPRESSION_PHASES)
+            if current_size <= max_size_mb:
+                tqdm.write(f"\nPDF comprimido guardado en: {output_path}")
+                return output_path
 
-    while dpi >= EXTENDED_DPI_FLOOR:
-        fase_num += 1
-        current_size = _attempt_compression(
-            f"Fase {fase_num}",
-            input_path,
-            output_path,
-            "/screen",
-            extra_args=_build_downsample_args(dpi),
-        )
+            dpi -= EXTENDED_DPI_STEP
 
-        if current_size <= max_size_mb:
-            print(f"\nPDF comprimido guardado en: {output_path}")
-            return output_path
-
-        dpi -= EXTENDED_DPI_STEP
-
-    print(
+    tqdm.write(
         f"\nNo fue posible reducir '{input_path.name}' por debajo de {max_size_mb}MB "
         f"tras aplicar todas las fases de compresión, incluida la compresión extendida "
         f"hasta {EXTENDED_DPI_FLOOR} DPI. Se recomienda reintentar "

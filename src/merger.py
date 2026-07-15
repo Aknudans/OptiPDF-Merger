@@ -6,6 +6,7 @@ en un solo documento PDF.
 
 from pathlib import Path
 from pypdf import PdfWriter
+from tqdm import tqdm
 
 def get_pdf_files(input_dir: str) -> list[Path]:
     """
@@ -52,8 +53,8 @@ def merge_pdfs(input_dir: str, output_path: str) -> Path:
     pdf_files = get_pdf_files(input_dir)
     writer = PdfWriter()
 
-    for pdf_file in pdf_files:
-        print(f"Agregando: {pdf_file.name}")
+    for pdf_file in tqdm(pdf_files, desc="Fusionando", unit="pdf"):
+        tqdm.write(f"Agregando: {pdf_file.name}")
         writer.append(str(pdf_file))
 
     output = Path(output_path)
