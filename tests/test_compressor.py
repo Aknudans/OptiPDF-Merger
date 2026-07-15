@@ -149,3 +149,70 @@ def test_llega_al_piso_de_dpi_sin_exito(tmp_path, monkeypatch, big_input):
     assert fake_run.calls["count"] == total_calls
     # El archivo final es el del último intento (10 DPI), el más comprimido de toda la escalada.
     assert output_path.exists()
+
+
+def test_exactly_at_limit_no_compress(tmp_path, monkeypatch):
+    """Si el archivo pesa exactamente el límite, no debe comprimirse."""
+    input_path = tmp_path / "input.pdf"
+    write_mb(input_path, 20)
+    output_path = tmp_path / "output.pdf"
+
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(compressor, "_run_ghostscript", fake_run)
+
+    result = compress_pdf(str(input_path), str(output_path), max_size_mb=20)
+
+    assert result == output_path
+    assert output_path.exists()
+    assert not called
+
+
+def test_zero_size_file_copies(tmp_path, monkeypatch):
+    """Un archivo de 0 bytes se copia sin llamar a GhostScript."""
+    input_path = tmp_path / "input.pdf"
+    write_mb(input_path, 0)
+    output_path = tmp_path / "output.pdf"
+
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(compressor, "_run_ghostscript", fake_run)
+
+    result = compress_pdf(str(input_path), str(output_path), max_size_mb=1)
+
+    assert result == output_path
+    assert output_path.exists()
+    assert not called
+
+
+def test_missing_input_raises(tmp_path):
+    """Si el archivo de entrada no existe, debe propagarse FileNotFoundError."""
+    input_path = tmp_path / "no_existe.pdf"
+    output_path = tmp_path / "output.pdf"
+
+    with pytest.raises(FileNotFoundError):
+        compress_pdf(str(input_path), str(output_path), max_size_mb=1)
+
+
+def test_build_downsample_args_returns_expected_length():
+    """_build_downsample_args debe devolver la lista correcta de argumentos."""
+    args = compressor._build_downsample_args(50)
+    # Debe contener 9 elementos (3 switches + 3 tipos + 3 resoluciones)
+    assert isinstance(args, list)
+    assert len(args) == 9
+
+
+def test_build_downsample_args_contains_resolution_args():
+    args = compressor._build_downsample_args(30)
+    # Verificar que aparecen las claves de resolución con el valor correcto
+    assert any(a == "-dColorImageResolution=30" for a in args)
+    assert any(a == "-dGrayImageResolution=30" for a in args)
+    assert any(a == "-dMonoImageResolution=30" for a in args)

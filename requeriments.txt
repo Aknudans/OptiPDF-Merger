@@ -1,3 +1,4 @@
 pypdf
 pikepdf
+pymupdf
 pytest

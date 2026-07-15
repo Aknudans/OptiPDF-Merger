@@ -123,3 +123,17 @@ def test_merge_pdfs_falla_si_no_hay_pdfs(tmp_path):
 
     with pytest.raises(ValueError):
         merge_pdfs(str(carpeta_vacia), str(output_path))
+
+
+def test_merge_pdfs_overwrites_existing_output(pdf_folder, tmp_path):
+    """Si el archivo de salida ya existe, la función lo sobrescribe."""
+    output_path = tmp_path / "output" / "merged.pdf"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Crear un archivo existente con contenido distintivo
+    output_path.write_bytes(b"viejo contenido")
+
+    result = merge_pdfs(str(pdf_folder), str(output_path))
+
+    assert result.exists()
+    assert result == output_path
+    assert output_path.read_bytes() != b"viejo contenido"

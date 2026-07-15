@@ -2,21 +2,19 @@
 test_optimizer.py
 
 Pruebas unitarias para optimizer.py.
-Se usa monkeypatch sobre shutil.which y subprocess.run para simular la
-presencia/ausencia de mutool, sin depender de que esté instalado en el
-sistema donde corren los tests.
+Se usa monkeypatch sobre optimizer.pymupdf para simular la presencia o
+ausencia de la librería, sin depender de tener PyMuPDF real instalado
+(salvo en los casos de integración marcados explícitamente).
 """
 
 import pytest
-import subprocess
 from pathlib import Path
 
 from src import optimizer
 from src.optimizer import (
-    is_mutool_available,
+    is_pymupdf_available,
     deduplicate_pdf,
     deduplicate_if_available,
-    MutoolNotFoundError,
 )
 
 
@@ -27,64 +25,63 @@ def dummy_input(tmp_path):
     return input_path
 
 
-def test_is_mutool_available_true_cuando_esta_en_el_path(monkeypatch):
-    monkeypatch.setattr(optimizer.shutil, "which", lambda cmd: "C:/tools/mutool.exe")
-    assert is_mutool_available() is True
+class FakeDoc:
+    def __init__(self):
+        self.saved_with = None
+
+    def save(self, path, garbage=0, deflate=False):
+        self.saved_with = {"path": path, "garbage": garbage, "deflate": deflate}
+        Path(path).write_bytes(b"contenido optimizado")
+
+    def close(self):
+        pass
 
 
-def test_is_mutool_available_false_cuando_no_esta_en_el_path(monkeypatch):
-    monkeypatch.setattr(optimizer.shutil, "which", lambda cmd: None)
-    assert is_mutool_available() is False
+class FakePyMuPDF:
+    def __init__(self):
+        self.opened_path = None
+        self.doc = FakeDoc()
+
+    def open(self, path):
+        self.opened_path = path
+        return self.doc
 
 
-def test_deduplicate_pdf_lanza_error_si_mutool_no_esta_instalado(dummy_input, tmp_path, monkeypatch):
-    monkeypatch.setattr(optimizer.shutil, "which", lambda cmd: None)
+def test_is_pymupdf_available_true_cuando_la_libreria_esta_presente(monkeypatch):
+    monkeypatch.setattr(optimizer, "pymupdf", FakePyMuPDF())
+    assert is_pymupdf_available() is True
+
+
+def test_is_pymupdf_available_false_cuando_la_libreria_no_esta_instalada(monkeypatch):
+    monkeypatch.setattr(optimizer, "pymupdf", None)
+    assert is_pymupdf_available() is False
+
+
+def test_deduplicate_pdf_lanza_import_error_si_no_esta_instalado(dummy_input, tmp_path, monkeypatch):
+    monkeypatch.setattr(optimizer, "pymupdf", None)
     output_path = tmp_path / "output.pdf"
 
-    with pytest.raises(MutoolNotFoundError):
+    with pytest.raises(ImportError):
         deduplicate_pdf(str(dummy_input), str(output_path))
 
 
-def test_deduplicate_pdf_ejecuta_clean_ggg(dummy_input, tmp_path, monkeypatch):
-    monkeypatch.setattr(optimizer.shutil, "which", lambda cmd: "mutool")
-
-    captured_command = {}
-
-    def fake_run(command, check):
-        captured_command["command"] = command
-        # Simula que mutool generó el archivo de salida.
-        Path(command[-1]).write_bytes(b"contenido optimizado")
-
-    monkeypatch.setattr(optimizer.subprocess, "run", fake_run)
+def test_deduplicate_pdf_llama_a_save_con_garbage_4_y_deflate(dummy_input, tmp_path, monkeypatch):
+    fake = FakePyMuPDF()
+    monkeypatch.setattr(optimizer, "pymupdf", fake)
 
     output_path = tmp_path / "output.pdf"
     result = deduplicate_pdf(str(dummy_input), str(output_path))
 
     assert result == output_path
     assert output_path.exists()
-    command = captured_command["command"]
-    assert command[0] == "mutool"
-    assert command[1] == "clean"
-    assert "-ggg" in command
-    assert command[-2] == str(dummy_input)
-    assert command[-1] == str(output_path)
+    assert fake.opened_path == str(dummy_input)
+    assert fake.doc.saved_with["path"] == str(output_path)
+    assert fake.doc.saved_with["garbage"] == 4
+    assert fake.doc.saved_with["deflate"] is True
 
 
-def test_deduplicate_pdf_propaga_error_de_subprocess(dummy_input, tmp_path, monkeypatch):
-    monkeypatch.setattr(optimizer.shutil, "which", lambda cmd: "mutool")
-
-    def fake_run(command, check):
-        raise subprocess.CalledProcessError(returncode=1, cmd=command)
-
-    monkeypatch.setattr(optimizer.subprocess, "run", fake_run)
-
-    output_path = tmp_path / "output.pdf"
-    with pytest.raises(subprocess.CalledProcessError):
-        deduplicate_pdf(str(dummy_input), str(output_path))
-
-
-def test_deduplicate_if_available_omite_el_paso_si_no_hay_mutool(dummy_input, tmp_path, monkeypatch):
-    monkeypatch.setattr(optimizer, "is_mutool_available", lambda: False)
+def test_deduplicate_if_available_omite_el_paso_si_no_hay_pymupdf(dummy_input, tmp_path, monkeypatch):
+    monkeypatch.setattr(optimizer, "is_pymupdf_available", lambda: False)
 
     called = False
 
@@ -103,8 +100,8 @@ def test_deduplicate_if_available_omite_el_paso_si_no_hay_mutool(dummy_input, tm
     assert not called
 
 
-def test_deduplicate_if_available_llama_a_deduplicate_pdf_si_hay_mutool(dummy_input, tmp_path, monkeypatch):
-    monkeypatch.setattr(optimizer, "is_mutool_available", lambda: True)
+def test_deduplicate_if_available_llama_a_deduplicate_pdf_si_hay_pymupdf(dummy_input, tmp_path, monkeypatch):
+    monkeypatch.setattr(optimizer, "is_pymupdf_available", lambda: True)
 
     called_with = {}
 
@@ -119,3 +116,61 @@ def test_deduplicate_if_available_llama_a_deduplicate_pdf_si_hay_mutool(dummy_in
 
     assert result == output_path
     assert called_with["args"] == (str(dummy_input), str(output_path))
+
+
+# ---------- Prueba de integración real con PyMuPDF instalado ----------
+
+def test_integracion_real_deduplica_un_pdf_valido(tmp_path):
+    pytest.importorskip("pymupdf")
+    from pypdf import PdfWriter
+
+    input_path = tmp_path / "input.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    with open(input_path, "wb") as f:
+        writer.write(f)
+
+    output_path = tmp_path / "output.pdf"
+    result = deduplicate_pdf(str(input_path), str(output_path))
+
+    assert result == output_path
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_deduplicate_pdf_overwrites_existing_output(dummy_input, tmp_path, monkeypatch):
+    """Deduplicate debe sobrescribir un archivo de salida existente."""
+    fake = FakePyMuPDF()
+    monkeypatch.setattr(optimizer, "pymupdf", fake)
+
+    output_path = tmp_path / "output.pdf"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(b"contenido viejo")
+
+    result = deduplicate_pdf(str(dummy_input), str(output_path))
+
+    assert result == output_path
+    assert output_path.exists()
+    assert output_path.read_bytes() != b"contenido viejo"
+
+
+def test_deduplicate_pdf_propagates_pymupdf_errors(dummy_input, tmp_path, monkeypatch):
+    """Si PyMuPDF lanza un error al abrir, debe propagarse."""
+    class BadPyMuPDF:
+        def open(self, path):
+            raise RuntimeError("error al abrir")
+
+    monkeypatch.setattr(optimizer, "pymupdf", BadPyMuPDF())
+    output_path = tmp_path / "output.pdf"
+
+    with pytest.raises(RuntimeError):
+        deduplicate_pdf(str(dummy_input), str(output_path))
+
+
+def test_is_pymupdf_available_parametrized():
+    # Comprueba True/False según el valor de la variable interna
+    optimizer.pymupdf = None
+    assert is_pymupdf_available() is False
+
+    optimizer.pymupdf = FakePyMuPDF()
+    assert is_pymupdf_available() is True
