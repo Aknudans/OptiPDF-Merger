@@ -1,8 +1,9 @@
 """
 compressor.py
 
-Es el modulo que se encargara de comprimir los PDF's para que estos no superen un 
-tamaño maximo (20mb por el momento, se ajustará a futuro para que lo elija el usuario).
+Es el modulo que se encargara de comprimir los PDF's para que estos no superen un
+tamaño maximo (20mb por defecto, configurable desde config.py o pasando
+max_size_mb explícitamente).
 Usa GhostScript como motor para la compresión, ya que este ofrece el mejor resultado
 reduciendo la resolución/calidad de imagenes incrustadas, algo que las librerias
 de python en general no hacen ni logran por si solas
@@ -21,6 +22,8 @@ Flujo:
 import shutil
 import subprocess
 from pathlib import Path
+
+from src.config import DEFAULT_MAX_SIZE_MB
 
 COMPRESSION_PHASES = [
     {"name": "Fase 1", "gs_setting": "/prepress"},  #Mayor calidad
@@ -143,7 +146,7 @@ def _attempt_compression(
     return current_size
 
 
-def compress_pdf(input_path: str, output_path: str, max_size_mb: float = 20) -> Path:
+def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT_MAX_SIZE_MB) -> Path:
     """
     Comprime un PDF aplicando fases sucesivas de calidad decreciente hasta
     que el resultado pese menos que max_size_mb. Si las 4 fases estándar
