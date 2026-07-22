@@ -4,3 +4,4 @@ venv/
 input_pdfs/*.pdf
 output/*.pdf
 .env
+installs/

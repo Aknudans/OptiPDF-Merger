@@ -61,6 +61,16 @@ La herramienta opera en un pipeline de tres etapas:
     gs --version
     ```
 
+### Instalación automática de dependencias (Windows)
+Si vas a entregarle el programa a otra persona (por pendrive, zip, etc.) y querés reducir errores humanos al instalar Python, GhostScript y qpdf, `install_dependencies.bat` puede instalar los 3 de forma silenciosa a partir de sus instaladores oficiales:
+
+1.  Colocá los instaladores en una carpeta llamada `installs/` junto a `install_dependencies.bat` (no se incluye en el repositorio, cada quien pone los suyos):
+    *   `python-3.x.x-amd64.exe` (el instalador oficial de [python.org](https://www.python.org/downloads/), no el "Python Install Manager" en `.msix`, que requiere un paso adicional).
+    *   `gs*.exe` (el instalador de [GhostScript](https://ghostscript.com/releases/)).
+    *   `qpdf*.exe` (el instalador de [qpdf](https://github.com/qpdf/qpdf/releases)).
+2.  Ejecutá `install_dependencies.bat`. Te va a pedir permisos de Administrador una sola vez (para poder instalar los 3), y después instala cada uno en modo silencioso, sin ventanas ni pasos que la otra persona tenga que responder.
+3.  Cerrá esa ventana y abrí una nueva antes de usar `run.bat` o `run_gui.bat`, para que Windows reconozca los programas recién instalados.
+
 ## Uso
 1.  Coloca todos los archivos PDF que deseas fusionar en el directorio `input_pdfs` (o en el directorio de tu elección).
 2.  Ejecuta el script desde la raíz del directorio del proyecto.
