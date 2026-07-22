@@ -69,12 +69,12 @@ python -m src.main
 # Custom input dir / output dir / size cap
 python -m src.main path/to/pdfs --output-dir out --max-size-mb 15
 
-# Windows convenience wrapper (checks .venv exists, then runs src.main)
+# Windows convenience wrapper (bootstraps .venv + deps if missing, then runs src.main)
 run.bat
 
 # Launch the browser GUI instead (opens http://127.0.0.1:5000 automatically)
 python -m src.webapp
-run_gui.bat
+run_gui.bat  # same bootstrap-if-missing behavior as run.bat, then runs src.webapp
 
 # Run all tests
 pytest
@@ -86,14 +86,21 @@ pytest tests/test_compressor.py::test_se_detiene_en_la_primera_fase_que_cumple
 
 There is no lint/format tooling configured in this repo (no ruff/black/flake8 config present).
 
+## Implemented: self-bootstrapping `run.bat` / `run_gui.bat`
+
+Both launchers used to just error out ("No se encontro el entorno virtual en .venv") with manual instructions if `.venv\Scripts\python.exe` was missing. They now bootstrap it themselves inside that same `if not exist` block: check `where python` (clear message pointing to `install_dependencies.bat` if Python itself isn't installed, rather than a cryptic `venv` failure), `python -m venv .venv`, then `.venv\Scripts\pip.exe install -r requeriments.txt` — each step's `errorlevel` is checked and aborts with a message rather than silently continuing into a broken run. This only fires once per machine (subsequent runs see `.venv\Scripts\python.exe` already exists and skip straight to launching). Verified end-to-end in an isolated scratch folder containing only `src/`, `run.bat`, and `requeriments.txt` (no `.venv`) — it created the venv, installed all 4 dependencies including Flask, and proceeded to run `src.main`.
+
+Both `.bat` files are near-duplicates of each other (same bootstrap block, different final launch line) rather than sharing a common subroutine — deliberate, to keep each script simple and independently readable rather than introducing `call :label` indirection for ~15 lines of duplication.
+
 ## Implemented: unattended dependency installer (`install_dependencies.bat`)
 
 For handing the project to someone else (pendrive, zip by email) without them fumbling three separate installer wizards: this script silently installs Python, GhostScript, and qpdf from their official Windows installers. Design points:
 
+- **Checks before installing anything.** Each of the 3 dependencies is probed with `where` first (`where python`; `where gs || where gswin64c || where gswin32c` — same 3 names/order as `compressor._check_gs_installed()`; `where qpdf`), setting a `NEED_PYTHON`/`NEED_GS`/`NEED_QPDF` flag (`0`/`1`) per result. If all three come back `"000"` (checked via string concatenation, `if "%NEED_PYTHON%%NEED_GS%%NEED_QPDF%"=="000"`), it reports everything's already installed and exits **without ever prompting for Administrator** — only what's actually missing triggers elevation and the installer search/run for that one tool. This ordering (detect first, elevate only if needed) was a deliberate restructure from an earlier version that always elevated unconditionally.
 - Expects an `installs/` folder next to it (gitignored — installer binaries, ~100MB+ combined, must never be committed) containing `python-*.exe` (the classic python.org installer, **not** the newer `python-manager-*.msix` "Python Install Manager" — that one needs an extra step to actually provision a runtime after installing the manager app itself, which this script doesn't handle), `gs*.exe`, and `qpdf*.exe`. Each is located via a wildcard `for %%F in (...)` match rather than a hardcoded filename, since version numbers change with every release.
-- Self-elevates once via `powershell Start-Process -Verb RunAs` if not already running as Administrator (checked with `net session`), so the person sees one UAC prompt for all three installs instead of one per installer.
-- Installs silently with switches specific to each installer's toolchain: `/quiet InstallAllUsers=1 PrependPath=1 Include_test=0` for the python.org bootstrapper, `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` for GhostScript and qpdf (both built with Inno Setup). Uses `if errorlevel 1` (not `%errorlevel%`) to check each install's exit code — the safe form inside a parenthesized block.
-- Deliberately does **not** try to verify success by checking `where gs`/`where python` etc. at the end: a freshly-elevated `cmd.exe` process still has the *old* PATH cached from before the installers updated the registry, so any such check would give a false negative even on a fully successful install. Instead it reports each installer's own exit code and tells the user to close the window and open a new one (a fresh process picks up the updated PATH) before running `run.bat`/`run_gui.bat`.
+- Self-elevates once via `powershell Start-Process -Verb RunAs` if not already running as Administrator (checked with `net session`) **and at least one dependency is missing**, so the person sees one UAC prompt for all pending installs instead of one per installer.
+- Installs silently with switches specific to each installer's toolchain: `/quiet InstallAllUsers=1 PrependPath=1 Include_test=0` for the python.org bootstrapper, `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` for GhostScript and qpdf (both built with Inno Setup). Uses `if errorlevel 1` (not `%errorlevel%`) to check each install's exit code — the safe form inside a parenthesized block. The `NEED_*`/errorlevel checks all rely on plain (non-delayed) expansion working correctly here because each `set` and each later read sit in their own separate top-level `if` statement — never a `set` followed by a read of that same variable *inside one single still-open parenthesized block*, which is the actual classic batch gotcha (`setlocal enabledelayedexpansion` was deliberately avoided rather than needed).
+- Deliberately does **not** try to verify success by checking `where gs`/`where python` etc. at the very end after installing: a freshly-elevated `cmd.exe` process still has the *old* PATH cached from before the installers updated the registry, so any such check would give a false negative even on a fully successful install. Instead it reports each installer's own exit code and tells the user to close the window and open a new one (a fresh process picks up the updated PATH) before running `run.bat`/`run_gui.bat`. `pause` runs on every exit path (nothing-to-do, missing `installs/` folder, and normal completion) so the window never vanishes before the person reads the outcome.
 
 ## External binary dependencies
 

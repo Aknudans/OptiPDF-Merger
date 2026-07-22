@@ -39,6 +39,9 @@ La herramienta opera en un pipeline de tres etapas:
 *   Los paquetes de Python requeridos se encuentran listados en `requeriments.txt`.
 
 ## Instalación
+
+> **Windows:** si vas a usar `run.bat` o `run_gui.bat`, podés saltarte los pasos 2 y 3 — ambos crean el entorno virtual e instalan las dependencias automáticamente la primera vez que se ejecutan, si no existe `.venv` todavía.
+
 1.  Clona el repositorio:
     ```sh
     git clone [https://github.com/aknudan/optipdf-merger.git](https://github.com/aknudan/optipdf-merger.git)
