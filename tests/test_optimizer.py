@@ -67,6 +67,7 @@ def test_deduplicate_pdf_llama_a_qpdf_con_opciones_correctas(dummy_input, tmp_pa
         "qpdf",
         "--stream-data=compress",
         "--object-streams=generate",
+        "--remove-unreferenced-resources=yes",
         str(dummy_input),
         str(output_path),
     ]

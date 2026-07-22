@@ -1,14 +1,20 @@
 """
 optimizer.py
 
-Paso opcional de optimización estructural para PDFs fusionados, previo a
-la compresión con pérdida. Usa qpdf para realizar una optimización sin
-pérdida (recomprimir streams, generar object streams y limpiar estructuras)
-antes de pasar al pipeline de compresión con GhostScript.
+Paso de optimización estructural sin pérdida para PDFs, basado en qpdf
+(recomprimir streams, generar object streams y quitar recursos ya no
+referenciados). Se reutiliza en dos puntos del pipeline:
 
-Es un paso OPCIONAL: si qpdf no está instalado, el pipeline no debe
-interrumpirse. Se omite el paso con un aviso y se sigue funcionando solo
-con compressor.py.
+1. Como pre-paso, antes de la compresión con pérdida de GhostScript
+   (llamado desde main.py sobre merged.pdf -> deduped.pdf).
+2. Como paso final de "exprimido" sin pérdida dentro de compressor.py,
+   cuando las fases de GhostScript no bastan para cumplir el tamaño
+   objetivo sin bajar la resolución de imagen por debajo del piso de
+   calidad mínimo.
+
+Es un paso OPCIONAL en ambos casos: si qpdf no está instalado, el pipeline
+no debe interrumpirse. Se omite el paso con un aviso y se sigue
+funcionando solo con GhostScript (compressor.py).
 """
 
 import shutil
@@ -28,6 +34,8 @@ def deduplicate_pdf(input_path: str, output_path: str) -> Path:
     Se ejecuta qpdf con opciones razonables para:
     - recomprimir streams
     - generar object streams
+    - eliminar recursos (fuentes, imágenes, etc.) que ya no son referenciados
+      por ninguna página, tras la fusión de múltiples PDFs
     - reducir el tamaño sin perder calidad visual
 
     Args:
@@ -58,6 +66,7 @@ def deduplicate_pdf(input_path: str, output_path: str) -> Path:
                 "qpdf",
                 "--stream-data=compress",
                 "--object-streams=generate",
+                "--remove-unreferenced-resources=yes",
                 str(input_path),
                 str(output_path),
             ],

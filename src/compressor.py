@@ -3,20 +3,26 @@ compressor.py
 
 Es el modulo que se encargara de comprimir los PDF's para que estos no superen un
 tamaño maximo (20mb por defecto, configurable desde config.py o pasando
-max_size_mb explícitamente).
-Usa GhostScript como motor para la compresión, ya que este ofrece el mejor resultado
-reduciendo la resolución/calidad de imagenes incrustadas, algo que las librerias
-de python en general no hacen ni logran por si solas
+max_size_mb explícitamente), sin bajar la calidad de imagen de un piso mínimo
+legible (MIN_DPI_FLOOR).
+Usa GhostScript como motor principal para la compresión con pérdida, ya que este
+ofrece el mejor resultado reduciendo la resolución/calidad de imagenes incrustadas,
+algo que las librerias de python en general no hacen ni logran por si solas. Cuando
+GhostScript no basta, se recurre a qpdf (optimizer.py) para un paso adicional de
+compresión sin pérdida, en vez de seguir sacrificando calidad de imagen.
 
 Flujo:
   Archivo recibido
-    -> ¿pesa más de 20MB? -> Fase 1: /prepress
-    -> ¿pesa más de 20MB? -> Fase 2: /printer
-    -> ¿pesa más de 20MB? -> Fase 3: /ebook
-    -> ¿pesa más de 20MB? -> Fase 4: /screen
-    -> ¿pesa más de 20MB? -> Fases extendidas: downsampling progresivo de
-       imágenes (60 -> 50 -> 40 -> 30 -> 20 -> 10 DPI), deteniéndose en el
-       primer paso que cumpla el objetivo o al llegar al piso de 10 DPI
+    -> ¿pesa más de max_size_mb? -> Fase 1: /prepress
+    -> ¿pesa más de max_size_mb? -> Fase 2: /printer
+    -> ¿pesa más de max_size_mb? -> Fase 3: /ebook
+    -> ¿pesa más de max_size_mb? -> Fase 4: /screen, forzando el piso de
+       MIN_DPI_FLOOR en vez del ~72 DPI por defecto del preset, para no
+       cruzar la calidad mínima aceptable
+    -> ¿pesa más de max_size_mb? -> Fase 5: compresión adicional sin
+       pérdida con qpdf (recompresión de streams, object streams, poda de
+       recursos no referenciados). Si qpdf no está instalado, se omite
+       con un aviso y se conserva el resultado de la Fase 4.
 """
 
 import shutil
@@ -26,19 +32,18 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.config import DEFAULT_MAX_SIZE_MB
+from src.optimizer import deduplicate_pdf, is_qpdf_available
+
+MIN_DPI_FLOOR = 100  # piso de calidad de imagen: nunca bajar de esta resolución
 
 COMPRESSION_PHASES = [
-    {"name": "Fase 1", "gs_setting": "/prepress"},  #Mayor calidad
-    {"name": "Fase 2", "gs_setting": "/printer"},   #Buena Calidad
-    {"name": "Fase 3", "gs_setting": "/ebook"},     #Calidad Media
-    {"name": "Fase 4", "gs_setting": "/screen"},    #Maxima Compresion
+    {"name": "Fase 1", "gs_setting": "/prepress"},                        #Mayor calidad
+    {"name": "Fase 2", "gs_setting": "/printer"},                         #Buena Calidad
+    {"name": "Fase 3", "gs_setting": "/ebook"},                           #Calidad Media
+    {"name": "Fase 4", "gs_setting": "/screen", "floor_dpi": MIN_DPI_FLOOR},  #Maxima Compresion con pérdida, sin cruzar el piso
 ]
 
 MB_IN_BYTES = 1024 * 1024
-
-EXTENDED_DPI_START = 60   # primer paso extendido, justo por debajo de /screen (~72 DPI)
-EXTENDED_DPI_STEP = 10    # decremento de DPI en cada paso
-EXTENDED_DPI_FLOOR = 10   # piso de seguridad: no se baja de este DPI
 
 class GhostScriptNotFoundError(RuntimeError):
     """Se lanzará cuando el binario de GhostScript no se encuentre instalado"""
@@ -149,13 +154,32 @@ def _attempt_compression(
     return current_size
 
 
+def _attempt_qpdf_squeeze(label: str, path: Path) -> float:
+    """
+    Ejecuta un paso adicional de compresión sin pérdida con qpdf sobre un
+    archivo ya comprimido con GhostScript, sobrescribiéndolo en su lugar.
+    Devuelve el tamaño resultante en MB, imprimiendo el progreso por consola
+    con tqdm.write para no corromper la barra de progreso activa.
+    """
+    tqdm.write(f"{label}: compresión adicional sin pérdida con qpdf...")
+
+    tmp_path = path.with_name(path.name + ".qpdf.tmp")
+    deduplicate_pdf(str(path), str(tmp_path))
+    tmp_path.replace(path)
+
+    current_size = get_file_size_mb(path)
+    tqdm.write(f"Tamaño resultante: {current_size:.2f}MB")
+    return current_size
+
+
 def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT_MAX_SIZE_MB) -> Path:
     """
     Comprime un PDF aplicando fases sucesivas de calidad decreciente hasta
-    que el resultado pese menos que max_size_mb. Si las 4 fases estándar
-    de GhostScript no alcanzan, continúa con fases extendidas de
-    downsampling progresivo de imágenes hasta cumplir el objetivo o hasta
-    llegar al piso de seguridad de EXTENDED_DPI_FLOOR.
+    que el resultado pese menos que max_size_mb, sin bajar nunca la
+    resolución de imagen por debajo de MIN_DPI_FLOOR. Si las 4 fases
+    estándar de GhostScript no alcanzan, se aplica una fase final de
+    compresión sin pérdida con qpdf (Fase 5) en vez de seguir sacrificando
+    calidad de imagen.
 
     Args:
         input_path: ruta del PDF a comprimir.
@@ -164,7 +188,7 @@ def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT
 
     Returns:
         Path del archivo PDF resultante (comprimido, o el mejor logrado
-        tras agotar todas las fases).
+        tras agotar todas las fases, respetando siempre MIN_DPI_FLOOR).
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -175,14 +199,16 @@ def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT
         print(f"'{input_path.name}' ya cumple el límite de {max_size_mb}MB. No requiere compresión.")
         return output_path
 
-    num_extended_steps = (EXTENDED_DPI_START - EXTENDED_DPI_FLOOR) // EXTENDED_DPI_STEP + 1
-    total_steps = len(COMPRESSION_PHASES) + num_extended_steps
+    qpdf_available = is_qpdf_available()
+    total_steps = len(COMPRESSION_PHASES) + (1 if qpdf_available else 0)
 
     with tqdm(total=total_steps, desc="Comprimiendo", unit="fase") as pbar:
         for phase in COMPRESSION_PHASES:
+            extra_args = _build_downsample_args(phase["floor_dpi"]) if "floor_dpi" in phase else None
+
             pbar.set_postfix_str(phase["name"])
             current_size = _attempt_compression(
-                phase["name"], input_path, output_path, phase["gs_setting"]
+                phase["name"], input_path, output_path, phase["gs_setting"], extra_args
             )
             pbar.update(1)
 
@@ -190,37 +216,31 @@ def compress_pdf(input_path: str, output_path: str, max_size_mb: float = DEFAULT
                 tqdm.write(f"\nPDF comprimido guardado en: {output_path}")
                 return output_path
 
-        tqdm.write(
-            "\nLas fases estándar no fueron suficientes. "
-            "Iniciando compresión extendida con downsampling progresivo de imágenes..."
-        )
-
-        dpi = EXTENDED_DPI_START
-        fase_num = len(COMPRESSION_PHASES)
-
-        while dpi >= EXTENDED_DPI_FLOOR:
-            fase_num += 1
-            pbar.set_postfix_str(f"Fase {fase_num} ({dpi} DPI)")
-            current_size = _attempt_compression(
-                f"Fase {fase_num}",
-                input_path,
-                output_path,
-                "/screen",
-                extra_args=_build_downsample_args(dpi),
+        if qpdf_available:
+            tqdm.write(
+                "\nLas fases de GhostScript no fueron suficientes. "
+                f"Bajar más la resolución cruzaría el piso de calidad de {MIN_DPI_FLOOR} DPI, "
+                "así que se intenta un paso final de compresión sin pérdida con qpdf..."
             )
+            fase_num = len(COMPRESSION_PHASES) + 1
+            pbar.set_postfix_str(f"Fase {fase_num} (qpdf)")
+            current_size = _attempt_qpdf_squeeze(f"Fase {fase_num}", output_path)
             pbar.update(1)
 
             if current_size <= max_size_mb:
                 tqdm.write(f"\nPDF comprimido guardado en: {output_path}")
                 return output_path
-
-            dpi -= EXTENDED_DPI_STEP
+        else:
+            tqdm.write(
+                "\nLas fases de GhostScript no fueron suficientes y qpdf no está instalado: "
+                "se omite el paso final de compresión sin pérdida. Instálalo para exprimir "
+                "aún más el tamaño sin bajar la calidad de imagen."
+            )
 
     tqdm.write(
         f"\nNo fue posible reducir '{input_path.name}' por debajo de {max_size_mb}MB "
-        f"tras aplicar todas las fases de compresión, incluida la compresión extendida "
-        f"hasta {EXTENDED_DPI_FLOOR} DPI. Se recomienda reintentar "
-        "o revisar el contenido del PDF (imágenes muy pesadas, etc.)."
+        f"sin bajar la resolución de imagen por debajo del piso de calidad de {MIN_DPI_FLOOR} DPI. "
+        "Se recomienda reintentar o revisar el contenido del PDF (imágenes muy pesadas, etc.)."
     )
     return output_path
 
