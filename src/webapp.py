@@ -19,12 +19,17 @@ usuario decide dónde guardarlo, según la configuración de su propio
 navegador) y un panel con el registro de consola del proceso (las mismas
 fases/mensajes que se ven al correr `src.main` por línea de comandos),
 para poder confirmar que el resultado es el esperado antes de descargarlo.
+Mientras el proceso corre, ese mismo registro también se va imprimiendo
+en tiempo real en la ventana de cmd donde se ejecutó `run_gui.bat`, para
+que se pueda ver que sigue avanzando (y no que quedó colgado) en procesos
+largos con varios PDFs.
 """
 
 import base64
 import contextlib
 import html
 import io
+import sys
 import tempfile
 import threading
 import webbrowser
@@ -40,6 +45,28 @@ from src.config import DEFAULT_MAX_SIZE_MB
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # 1 GB: margen amplio para PDFs pesados
+
+
+class _TeeWriter:
+    """
+    Escribe cada mensaje tanto en un buffer de captura (para el panel de
+    registro de la página de resultado) como en el stream original de la
+    consola (stdout/stderr reales del proceso), para que el avance también
+    se vea en vivo en la ventana de cmd donde corre `run_gui.bat`.
+    """
+
+    def __init__(self, buffer: io.StringIO, original) -> None:
+        self._buffer = buffer
+        self._original = original
+
+    def write(self, s: str) -> int:
+        self._buffer.write(s)
+        self._original.write(s)
+        self._original.flush()
+        return len(s)
+
+    def flush(self) -> None:
+        self._original.flush()
 
 
 def _clean_console_log(raw: str) -> str:
@@ -224,8 +251,8 @@ def _fusion_form_body(error: str | None = None) -> str:
     return f"""
     <h1>Fusionar PDFs</h1>
     <p class="subtitle">
-      Elegí dos o más archivos PDF. Se fusionarán en orden alfabético por
-      nombre de archivo, se optimizarán y se comprimirán a un máximo de
+      Elija 2 o más archivos PDF. Se fusionarán en orden alfabético por
+      nombre de archivo, se intentará optimizar y se comprimir a un máximo de
       {DEFAULT_MAX_SIZE_MB}MB.
     </p>
     {error_html}
@@ -244,7 +271,7 @@ def _compresion_form_body(error: str | None = None) -> str:
     return f"""
     <h1>Comprimir PDF</h1>
     <p class="subtitle">
-      Elegí un archivo PDF. Se optimizará y comprimirá a un máximo de
+      Elija un PDF. Se intentará optimizar y comprimir a un máximo de
       {DEFAULT_MAX_SIZE_MB}MB, sin bajar la calidad de imagen por debajo
       de lo legible.
     </p>
@@ -263,7 +290,7 @@ def _result_body(output_name: str, download_href: str, log_text: str) -> str:
     log_html = html.escape(log_text) if log_text else "(el proceso no generó mensajes)"
     return f"""
     <h1>Proceso terminado</h1>
-    <p class="subtitle">Revisá el registro para confirmar que el resultado es el esperado antes de descargarlo.</p>
+    <p class="subtitle">El proceso terminó, si ocurre algun inconveniente en el archivo favor de enviar registro de procesos</p>
     <div class="result-layout">
       <div class="result-main">
         <a class="choice-btn btn-fusion" href="{download_href}" download="{output_name}">
@@ -307,7 +334,8 @@ def fusion_submit():
                 if filename.lower().endswith(".pdf"):
                     uploaded_file.save(input_dir / filename)
 
-            with contextlib.redirect_stdout(log_buffer), contextlib.redirect_stderr(log_buffer):
+            with contextlib.redirect_stdout(_TeeWriter(log_buffer, sys.stdout)), \
+                 contextlib.redirect_stderr(_TeeWriter(log_buffer, sys.stderr)):
                 merged_path = merge_pdfs(str(input_dir), str(workdir / "merged.pdf"))
                 deduped_path = deduplicate_if_available(str(merged_path), str(workdir / "deduped.pdf"))
                 final_path = compress_pdf(
@@ -350,7 +378,8 @@ def compresion_submit():
             input_path = workdir / filename
             uploaded_file.save(input_path)
 
-            with contextlib.redirect_stdout(log_buffer), contextlib.redirect_stderr(log_buffer):
+            with contextlib.redirect_stdout(_TeeWriter(log_buffer, sys.stdout)), \
+                 contextlib.redirect_stderr(_TeeWriter(log_buffer, sys.stderr)):
                 deduped_path = deduplicate_if_available(str(input_path), str(workdir / "deduped.pdf"))
                 final_path = compress_pdf(
                     str(deduped_path), str(workdir / "final.pdf"), max_size_mb=DEFAULT_MAX_SIZE_MB

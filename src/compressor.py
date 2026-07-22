@@ -34,7 +34,7 @@ from tqdm import tqdm
 from src.config import DEFAULT_MAX_SIZE_MB
 from src.optimizer import deduplicate_pdf, is_qpdf_available
 
-MIN_DPI_FLOOR = 100  # piso de calidad de imagen: nunca bajar de esta resolución
+MIN_DPI_FLOOR = 80  # piso de calidad de imagen: nunca bajar de esta resolución
 
 COMPRESSION_PHASES = [
     {"name": "Fase 1", "gs_setting": "/prepress"},                        #Mayor calidad
