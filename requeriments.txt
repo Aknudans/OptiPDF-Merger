@@ -1,5 +1,4 @@
+flask
 pypdf
-pikepdf
-pymupdf
 pytest
 tqdm
